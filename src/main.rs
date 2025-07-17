@@ -38,7 +38,7 @@ struct Cli {
     #[arg(short, long, help = "Input file path (default: stdin)")]
     input: Option<String>,
     
-    #[arg(short, long, default_value = "500", help = "Refresh interval in milliseconds")]
+    #[arg(short, long, default_value = "100", help = "Refresh interval in milliseconds")]
     refresh: u64,
 
     #[arg(long, help = "Enable logging to the specified file")]
@@ -162,16 +162,13 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 
-                Ok(ready) = tokio::time::timeout(Duration::from_millis(50), async {
-                    if event::poll(Duration::from_millis(10)).unwrap_or(false) {
-                        return event::read();
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    Err(io::Error::new(io::ErrorKind::TimedOut, "no event"))
-                }) => {
-                    if let Ok(event) = ready {
-                        handle_events(&event, &mut app, &clipboard_holder)?;
-                        should_redraw = true;
+                _ = tokio::time::sleep(Duration::from_millis(16)) => {
+                    // イベントをチェック（約60FPSで応答性を保つ）
+                    if event::poll(Duration::from_millis(0)).unwrap_or(false) {
+                        if let Ok(event) = event::read() {
+                            handle_events(&event, &mut app, &clipboard_holder)?;
+                            should_redraw = true;
+                        }
                     }
                 }
             }
