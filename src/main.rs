@@ -3,7 +3,7 @@ mod ui;
 
 use clap::Parser;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -212,132 +212,157 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Option<Clipboard>>>) -> anyhow::Result<()> {
-    if let Event::Key(key) = event {
-        if key.kind == KeyEventKind::Press {
-            match app.mode {
-                AppMode::ModuleSelection => {
-                    match key.code {
-                        KeyCode::Char('q') => {
-                            app.quit();
+    match event {
+        Event::Key(key) => {
+            if key.kind == KeyEventKind::Press {
+                match app.mode {
+                    AppMode::ModuleSelection => {
+                        match key.code {
+                            KeyCode::Char('q') => {
+                                app.quit();
+                            }
+                            KeyCode::Char(' ') | KeyCode::Enter => {
+                                app.toggle_selected_module();
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                app.next_module();
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                app.previous_module();
+                            }
+                            KeyCode::Tab => {
+                                app.switch_to_log_mode();
+                            }
+                            KeyCode::Char('r') => {
+                                app.filter_logs();
+                            }
+                            _ => {}
                         }
-                        KeyCode::Char(' ') | KeyCode::Enter => {
-                            app.toggle_selected_module();
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app.next_module();
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.previous_module();
-                        }
-                        KeyCode::Tab => {
-                            app.switch_to_log_mode();
-                        }
-                        KeyCode::Char('r') => {
-                            app.filter_logs();
-                        }
-                        _ => {}
                     }
-                }
-                AppMode::LogNavigation => {
-                    match key.code {
-                        KeyCode::Char('q') => {
-                            app.quit();
+                    AppMode::LogNavigation => {
+                        match key.code {
+                            KeyCode::Char('q') => {
+                                app.quit();
+                            }
+                            KeyCode::Tab => {
+                                app.switch_to_module_mode();
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                app.next_log_line();
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                app.previous_log_line();
+                            }
+                            KeyCode::Char('v') => {
+                                app.start_text_selection();
+                            }
+                            KeyCode::Esc => {
+                                app.scroll_to_bottom();
+                                app.switch_to_module_mode();
+                            }
+                            KeyCode::Char('c') => {
+                                app.clear_copy_message();
+                            }
+                            _ => {}
                         }
-                        KeyCode::Tab => {
-                            app.switch_to_module_mode();
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app.next_log_line();
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.previous_log_line();
-                        }
-                        KeyCode::Char('v') => {
-                            app.start_text_selection();
-                        }
-                        KeyCode::Esc => {
-                            app.switch_to_module_mode();
-                        }
-                        KeyCode::Char('c') => {
-                            app.clear_copy_message();
-                        }
-                        _ => {}
                     }
-                }
-                AppMode::TextSelection => {
-                    match key.code {
-                        KeyCode::Char('q') => {
-                            app.quit();
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app.next_log_line();
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.previous_log_line();
-                        }
-                        KeyCode::Char('y') => {
-                            let selected_text = app.copy_selected_logs()?;
-                            if !selected_text.is_empty() {
-                                // まずarboardで試行
-                                let mut arboard_success = false;
-                                if let Ok(mut clipboard) = Clipboard::new() {
-                                    if clipboard.set_text(&selected_text).is_ok() {
-                                        arboard_success = true;
-                                        // クリップボードオブジェクトを保持
-                                        let holder_clone = clipboard_holder.clone();
-                                        let _text_clone = selected_text.clone();
+                    AppMode::TextSelection => {
+                        match key.code {
+                            KeyCode::Char('q') => {
+                                app.quit();
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                app.next_log_line();
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                app.previous_log_line();
+                            }
+                            KeyCode::Char('y') => {
+                                let selected_text = app.copy_selected_logs()?;
+                                if !selected_text.is_empty() {
+                                    // まずarboardで試行
+                                    let mut arboard_success = false;
+                                    if let Ok(mut clipboard) = Clipboard::new() {
+                                        if clipboard.set_text(&selected_text).is_ok() {
+                                            arboard_success = true;
+                                            // クリップボードオブジェクトを保持
+                                            let holder_clone = clipboard_holder.clone();
+                                            let _text_clone = selected_text.clone();
+                                            tokio::spawn(async move {
+                                                if let Ok(mut holder) = holder_clone.lock() {
+                                                    *holder = Some(clipboard);
+                                                }
+                                                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                                            });
+                                        }
+                                    }
+                                
+                                    // arboardが失敗した場合やLinux環境での代替手段
+                                    if !arboard_success {
+                                        // xclipまたはwl-clipboardを試行
+                                        let text_clone = selected_text.clone();
                                         tokio::spawn(async move {
-                                            if let Ok(mut holder) = holder_clone.lock() {
-                                                *holder = Some(clipboard);
+                                            // xclip (X11) を試行
+                                            if let Ok(mut child) = Command::new("xclip")
+                                                .arg("-selection")
+                                                .arg("clipboard")
+                                                .stdin(std::process::Stdio::piped())
+                                                .spawn() {
+                                                if let Some(stdin) = child.stdin.as_mut() {
+                                                    use std::io::Write;
+                                                    let _ = stdin.write_all(text_clone.as_bytes());
+                                                }
+                                                let _ = child.wait();
                                             }
-                                            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                                            // wl-clipboard (Wayland) も試行
+                                            else if let Ok(mut child) = Command::new("wl-copy")
+                                                .stdin(std::process::Stdio::piped())
+                                                .spawn() {
+                                                if let Some(stdin) = child.stdin.as_mut() {
+                                                    use std::io::Write;
+                                                    let _ = stdin.write_all(text_clone.as_bytes());
+                                                }
+                                                let _ = child.wait();
+                                            }
                                         });
                                     }
                                 }
-                                
-                                // arboardが失敗した場合やLinux環境での代替手段
-                                if !arboard_success {
-                                    // xclipまたはwl-clipboardを試行
-                                    let text_clone = selected_text.clone();
-                                    tokio::spawn(async move {
-                                        // xclip (X11) を試行
-                                        if let Ok(mut child) = Command::new("xclip")
-                                            .arg("-selection")
-                                            .arg("clipboard")
-                                            .stdin(std::process::Stdio::piped())
-                                            .spawn() {
-                                            if let Some(stdin) = child.stdin.as_mut() {
-                                                use std::io::Write;
-                                                let _ = stdin.write_all(text_clone.as_bytes());
-                                            }
-                                            let _ = child.wait();
-                                        }
-                                        // wl-clipboard (Wayland) も試行
-                                        else if let Ok(mut child) = Command::new("wl-copy")
-                                            .stdin(std::process::Stdio::piped())
-                                            .spawn() {
-                                            if let Some(stdin) = child.stdin.as_mut() {
-                                                use std::io::Write;
-                                                let _ = stdin.write_all(text_clone.as_bytes());
-                                            }
-                                            let _ = child.wait();
-                                        }
-                                    });
-                                }
+                                app.clear_selection();
                             }
-                            app.clear_selection();
+                            KeyCode::Esc => {
+                                app.clear_selection();
+                            }
+                            KeyCode::Char('c') => {
+                                app.clear_copy_message();
+                            }
+                            _ => {}
                         }
-                        KeyCode::Esc => {
-                            app.clear_selection();
-                        }
-                        KeyCode::Char('c') => {
-                            app.clear_copy_message();
-                        }
-                        _ => {}
                     }
                 }
             }
         }
+        Event::Mouse(mouse) => {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    // マウススクロールアップ（上に3行スクロール）
+                    for _ in 0..3 {
+                        if app.mode == AppMode::LogNavigation || app.mode == AppMode::TextSelection {
+                            app.previous_log_line();
+                        }
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    // マウススクロールダウン（下に3行スクロール）
+                    for _ in 0..3 {
+                        if app.mode == AppMode::LogNavigation || app.mode == AppMode::TextSelection {
+                            app.next_log_line();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
     }
     Ok(())
 }

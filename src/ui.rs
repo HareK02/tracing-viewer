@@ -241,9 +241,10 @@ impl App {
         self.copy_message = None;
     }
 
-    fn scroll_to_bottom(&mut self) {
+    pub fn scroll_to_bottom(&mut self) {
         if !self.filtered_logs.is_empty() {
             self.current_log_line = self.filtered_logs.len() - 1;
+            self.auto_follow = true;
         }
     }
     pub fn update_scroll_position_with_height(&mut self, visible_lines: usize) {
