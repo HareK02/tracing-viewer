@@ -148,9 +148,7 @@ async fn main() -> anyhow::Result<()> {
                 _ = refresh_interval.tick() => {
                     if !pending_logs.is_empty() {
                         let logs = parse_logs_from_lines(&parser, &pending_logs);
-                        let mut all_logs = app.logs.clone();
-                        all_logs.extend(logs);
-                        app.update_logs(all_logs);
+                        app.add_logs(logs);
                         pending_logs.clear();
                         should_redraw = true;
                     }

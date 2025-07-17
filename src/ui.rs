@@ -73,6 +73,27 @@ impl App {
         }
     }
 
+    pub fn add_logs(&mut self, new_logs: Vec<LogEntry>) {
+        let old_log_count = self.filtered_logs.len();
+        let new_log_count = new_logs.len();
+        
+        // 新しいログを追加
+        self.logs.extend(new_logs);
+        
+        // 新しいモジュールのみを追加
+        for log in &self.logs[(self.logs.len() - new_log_count)..] {
+            self.module_tree.insert_module(&log.target);
+        }
+        
+        self.rebuild_module_items();
+        self.filter_logs();
+        
+        // 新しいログが追加されたときの自動追従
+        if self.auto_follow && self.filtered_logs.len() > old_log_count {
+            self.scroll_to_bottom();
+        }
+    }
+
     fn rebuild_module_tree(&mut self) {
         self.module_tree = ModuleTree::new("root".to_string());
         for log in &self.logs {
@@ -122,11 +143,13 @@ impl App {
     }
 
     pub fn filter_logs(&mut self) {
-        self.filtered_logs = self.logs
-            .iter()
-            .filter(|log| self.module_tree.is_module_selected(&log.target))
-            .cloned()
-            .collect();
+        self.filtered_logs.clear();
+        self.filtered_logs.extend(
+            self.logs
+                .iter()
+                .filter(|log| self.module_tree.is_module_selected(&log.target))
+                .cloned()
+        );
     }
 
     pub fn toggle_selected_module(&mut self) {

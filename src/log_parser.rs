@@ -32,9 +32,11 @@ impl ModuleTree {
         let mut current = self;
 
         for part in parts {
-            current.children
-                .entry(part.to_string())
-                .or_insert_with(|| ModuleTree::new(part.to_string()));
+            if !current.children.contains_key(part) {
+                current.children
+                    .entry(part.to_string())
+                    .or_insert_with(|| ModuleTree::new(part.to_string()));
+            }
             current = current.children.get_mut(part).unwrap();
         }
     }
