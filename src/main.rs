@@ -3,7 +3,7 @@ mod ui;
 
 use clap::Parser;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -18,6 +18,7 @@ use std::{
     path::Path,
     fs::File,
 };
+use futures::StreamExt;
 use tokio::{
     sync::mpsc,
     time::interval,
@@ -133,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
     let mut refresh_interval = interval(Duration::from_millis(cli.refresh));
     let mut pending_logs = Vec::new();
     let mut should_redraw = true;
+    let mut event_stream = EventStream::new();
 
     debug!("メインループ開始前の準備完了");
 
@@ -160,13 +162,10 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 
-                _ = tokio::time::sleep(Duration::from_millis(16)) => {
-                    // イベントをチェック（約60FPSで応答性を保つ）
-                    if event::poll(Duration::from_millis(0)).unwrap_or(false) {
-                        if let Ok(event) = event::read() {
-                            handle_events(&event, &mut app, &clipboard_holder)?;
-                            should_redraw = true;
-                        }
+                event = event_stream.next() => {
+                    if let Some(Ok(event)) = event {
+                        handle_events(&event, &mut app, &clipboard_holder)?;
+                        should_redraw = true;
                     }
                 }
             }
