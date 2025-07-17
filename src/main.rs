@@ -38,7 +38,7 @@ struct Cli {
     #[arg(short, long, help = "Input file path (default: stdin)")]
     input: Option<String>,
     
-    #[arg(short, long, default_value = "100", help = "Refresh interval in milliseconds")]
+    #[arg(short, long, default_value = "500", help = "Refresh interval in milliseconds")]
     refresh: u64,
 
     #[arg(long, help = "Enable logging to the specified file")]
@@ -132,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut refresh_interval = interval(Duration::from_millis(cli.refresh));
     let mut pending_logs = Vec::new();
+    let mut should_redraw = true;
 
     debug!("メインループ開始前の準備完了");
 
@@ -151,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
                         all_logs.extend(logs);
                         app.update_logs(all_logs);
                         pending_logs.clear();
+                        should_redraw = true;
                     }
                 }
                 
@@ -161,22 +163,26 @@ async fn main() -> anyhow::Result<()> {
                 }
                 
                 Ok(ready) = tokio::time::timeout(Duration::from_millis(50), async {
-                    loop {
-                        if event::poll(Duration::from_millis(1)).unwrap_or(false) {
-                            return event::read();
-                        }
-                        tokio::task::yield_now().await;
+                    if event::poll(Duration::from_millis(10)).unwrap_or(false) {
+                        return event::read();
                     }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    Err(io::Error::new(io::ErrorKind::TimedOut, "no event"))
                 }) => {
                     if let Ok(event) = ready {
                         handle_events(&event, &mut app, &clipboard_holder)?;
+                        should_redraw = true;
                     }
                 }
             }
 
-            if let Err(e) = terminal.draw(|f| ui::render(f, &mut app)) {
-                error!("メインループでの描画エラー: {}", e);
-                return Err(e.into());
+            // 再描画が必要な場合のみ描画
+            if should_redraw {
+                if let Err(e) = terminal.draw(|f| ui::render(f, &mut app)) {
+                    error!("メインループでの描画エラー: {}", e);
+                    return Err(e.into());
+                }
+                should_redraw = false;
             }
 
             if app.should_quit {
