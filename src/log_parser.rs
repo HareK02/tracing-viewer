@@ -94,6 +94,14 @@ impl ModuleTree {
             child.propagate_selection_to_children(selected);
         }
     }
+
+    pub fn select_all(&mut self) {
+        self.propagate_selection_to_children(true);
+    }
+
+    pub fn deselect_all(&mut self) {
+        self.propagate_selection_to_children(false);
+    }
 }
 
 pub struct LogParser {

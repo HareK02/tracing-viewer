@@ -3,7 +3,7 @@ mod ui;
 
 use clap::Parser;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind, MouseEventKind},
+    event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -242,16 +242,57 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                                 app.toggle_selected_module();
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                app.next_module();
+                                // モジュールリストの最下部にいる場合、ログレベル選択に移動
+                                if app.module_list_state.selected().unwrap_or(0) == app.module_items.len().saturating_sub(1) {
+                                    app.switch_to_log_level_mode();
+                                } else {
+                                    app.next_module();
+                                }
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
-                                app.previous_module();
+                                // モジュールリストの最上部にいる場合、ログレベル選択の最下部に移動
+                                if app.module_list_state.selected().unwrap_or(0) == 0 {
+                                    app.switch_to_log_level_mode();
+                                    // ログレベルリストの最下部に移動
+                                    if !app.available_log_levels.is_empty() {
+                                        app.selected_log_level_index = app.available_log_levels.len() - 1;
+                                    }
+                                } else {
+                                    app.previous_module();
+                                }
                             }
                             KeyCode::Tab => {
                                 app.switch_to_log_mode();
                             }
                             KeyCode::Char('r') => {
                                 app.filter_logs();
+                            }
+                            KeyCode::Char('1') => {
+                                app.toggle_log_level("ERROR");
+                            }
+                            KeyCode::Char('2') => {
+                                app.toggle_log_level("WARN");
+                            }
+                            KeyCode::Char('3') => {
+                                app.toggle_log_level("INFO");
+                            }
+                            KeyCode::Char('4') => {
+                                app.toggle_log_level("DEBUG");
+                            }
+                            KeyCode::Char('5') => {
+                                app.toggle_log_level("TRACE");
+                            }
+                            KeyCode::Char('a') => {
+                                app.select_all_modules();
+                            }
+                            KeyCode::Char('n') => {
+                                app.deselect_all_modules();
+                            }
+                            KeyCode::Char(',') => {
+                                app.decrease_panel_width();
+                            }
+                            KeyCode::Char('.') => {
+                                app.increase_panel_width();
                             }
                             _ => {}
                         }
@@ -262,7 +303,12 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                                 app.quit();
                             }
                             KeyCode::Tab => {
-                                app.switch_to_module_mode();
+                                if app.show_filter_panel {
+                                    app.switch_to_module_mode();
+                                } else {
+                                    app.show_filter_panel = true;
+                                    app.switch_to_module_mode();
+                                }
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
                                 app.next_log_line();
@@ -279,6 +325,21 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                             }
                             KeyCode::Char('c') => {
                                 app.clear_copy_message();
+                            }
+                            KeyCode::Char('1') => {
+                                app.toggle_log_level("ERROR");
+                            }
+                            KeyCode::Char('2') => {
+                                app.toggle_log_level("WARN");
+                            }
+                            KeyCode::Char('3') => {
+                                app.toggle_log_level("INFO");
+                            }
+                            KeyCode::Char('4') => {
+                                app.toggle_log_level("DEBUG");
+                            }
+                            KeyCode::Char('5') => {
+                                app.toggle_log_level("TRACE");
                             }
                             _ => {}
                         }
@@ -352,6 +413,63 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                             KeyCode::Char('c') => {
                                 app.clear_copy_message();
                                 return Ok(true);
+                            }
+                            _ => return Ok(false),
+                        }
+                    }
+                    AppMode::LogLevelFilter => {
+                        match key.code {
+                            KeyCode::Char('q') => {
+                                app.quit();
+                            }
+                            KeyCode::Tab => {
+                                app.switch_to_log_mode();
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                // ログレベルリストの最下部にいる場合、モジュール選択の最上部に移動
+                                if app.selected_log_level_index == app.available_log_levels.len().saturating_sub(1) {
+                                    app.switch_to_module_mode();
+                                    // モジュールリストの最上部に移動
+                                    app.module_list_state.select(Some(0));
+                                } else {
+                                    app.next_log_level();
+                                }
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                // ログレベルリストの最上部にいる場合、モジュール選択に移動
+                                if app.selected_log_level_index == 0 {
+                                    app.switch_to_module_mode();
+                                    // モジュールリストの最下部に移動
+                                    if !app.module_items.is_empty() {
+                                        app.module_list_state.select(Some(app.module_items.len() - 1));
+                                    }
+                                } else {
+                                    app.previous_log_level();
+                                }
+                            }
+                            KeyCode::Char(' ') | KeyCode::Enter => {
+                                app.toggle_selected_log_level();
+                            }
+                            KeyCode::Char('1') => {
+                                app.toggle_log_level("ERROR");
+                            }
+                            KeyCode::Char('2') => {
+                                app.toggle_log_level("WARN");
+                            }
+                            KeyCode::Char('3') => {
+                                app.toggle_log_level("INFO");
+                            }
+                            KeyCode::Char('4') => {
+                                app.toggle_log_level("DEBUG");
+                            }
+                            KeyCode::Char('5') => {
+                                app.toggle_log_level("TRACE");
+                            }
+                            KeyCode::Char(',') => {
+                                app.decrease_panel_width();
+                            }
+                            KeyCode::Char('.') => {
+                                app.increase_panel_width();
                             }
                             _ => return Ok(false),
                         }

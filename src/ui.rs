@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{List, ListItem, ListState, Paragraph},
     Frame,
 };
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashSet};
 use std::hash::{Hash, Hasher};
 
 pub struct App {
@@ -27,6 +27,11 @@ pub struct App {
     pub filter_dirty: bool,
     pub last_filter_hash: u64,
     pub last_terminal_size: (u16, u16),
+    pub log_level_filter: HashSet<String>,
+    pub available_log_levels: Vec<String>,
+    pub selected_log_level_index: usize,
+    pub show_filter_panel: bool,
+    pub filter_panel_width: u16,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +39,7 @@ pub enum AppMode {
     ModuleSelection,
     LogNavigation,
     TextSelection,
+    LogLevelFilter,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +70,11 @@ impl App {
             filter_dirty: true,
             last_filter_hash: 0,
             last_terminal_size: (0, 0),
+            log_level_filter: ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"].iter().map(|s| s.to_string()).collect(),
+            available_log_levels: vec!["ERROR".to_string(), "WARN".to_string(), "INFO".to_string(), "DEBUG".to_string(), "TRACE".to_string()],
+            selected_log_level_index: 0,
+            show_filter_panel: true,
+            filter_panel_width: 25,
         };
         app.module_list_state.select(Some(0));
         app
@@ -103,7 +114,10 @@ impl App {
         // 新しいログのみをフィルタリングして効率化
         let new_filtered_logs: Vec<LogEntry> = self.logs[(self.logs.len() - new_log_count)..]
             .iter()
-            .filter(|log| self.module_tree.is_module_selected(&log.target))
+            .filter(|log| {
+                self.module_tree.is_module_selected(&log.target) && 
+                self.log_level_filter.contains(&log.level)
+            })
             .cloned()
             .collect();
         
@@ -166,6 +180,14 @@ impl App {
     fn calculate_filter_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.module_tree.hash(&mut hasher);
+        
+        // ログレベルフィルタもハッシュに含める
+        let mut levels: Vec<_> = self.log_level_filter.iter().collect();
+        levels.sort();
+        for level in levels {
+            level.hash(&mut hasher);
+        }
+        
         hasher.finish()
     }
 
@@ -181,7 +203,10 @@ impl App {
         self.filtered_logs.extend(
             self.logs
                 .iter()
-                .filter(|log| self.module_tree.is_module_selected(&log.target))
+                .filter(|log| {
+                    self.module_tree.is_module_selected(&log.target) && 
+                    self.log_level_filter.contains(&log.level)
+                })
                 .cloned()
         );
         
@@ -227,10 +252,12 @@ impl App {
 
     pub fn switch_to_log_mode(&mut self) {
         self.mode = AppMode::LogNavigation;
+        self.show_filter_panel = false;
     }
 
     pub fn switch_to_module_mode(&mut self) {
         self.mode = AppMode::ModuleSelection;
+        self.show_filter_panel = true;
     }
 
     pub fn start_text_selection(&mut self) {
@@ -308,6 +335,70 @@ impl App {
             self.auto_follow = true;
         }
     }
+
+    pub fn toggle_log_level(&mut self, level: &str) {
+        if self.log_level_filter.contains(level) {
+            self.log_level_filter.remove(level);
+        } else {
+            self.log_level_filter.insert(level.to_string());
+        }
+        self.filter_dirty = true;
+        self.filter_logs();
+    }
+
+    pub fn switch_to_log_level_mode(&mut self) {
+        self.mode = AppMode::LogLevelFilter;
+        self.show_filter_panel = true;
+    }
+
+    pub fn select_all_modules(&mut self) {
+        self.module_tree.select_all();
+        self.rebuild_module_items();
+        self.filter_dirty = true;
+        self.filter_logs();
+    }
+
+    pub fn deselect_all_modules(&mut self) {
+        self.module_tree.deselect_all();
+        self.rebuild_module_items();
+        self.filter_dirty = true;
+        self.filter_logs();
+    }
+
+    pub fn next_log_level(&mut self) {
+        if !self.available_log_levels.is_empty() {
+            self.selected_log_level_index = (self.selected_log_level_index + 1) % self.available_log_levels.len();
+        }
+    }
+
+    pub fn previous_log_level(&mut self) {
+        if !self.available_log_levels.is_empty() {
+            self.selected_log_level_index = if self.selected_log_level_index == 0 {
+                self.available_log_levels.len() - 1
+            } else {
+                self.selected_log_level_index - 1
+            };
+        }
+    }
+
+    pub fn toggle_selected_log_level(&mut self) {
+        if self.selected_log_level_index < self.available_log_levels.len() {
+            let level = self.available_log_levels[self.selected_log_level_index].clone();
+            self.toggle_log_level(&level);
+        }
+    }
+
+    pub fn decrease_panel_width(&mut self) {
+        if self.filter_panel_width > 10 {
+            self.filter_panel_width -= 5;
+        }
+    }
+
+    pub fn increase_panel_width(&mut self) {
+        if self.filter_panel_width < 50 {
+            self.filter_panel_width += 5;
+        }
+    }
     pub fn update_scroll_position_with_height(&mut self, visible_lines: usize) {
         if visible_lines <= 2 || self.filtered_logs.is_empty() {
             return;
@@ -347,29 +438,60 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(f.area());
 
-    let top_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(20), 
-            Constraint::Length(1), 
-            Constraint::Percentage(79)
-        ])
-        .split(main_chunks[0]);
+    if app.show_filter_panel {
+        let remaining_width = 100 - app.filter_panel_width;
+        let top_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(app.filter_panel_width),  // 左パネル（ログレベル+モジュール）
+                Constraint::Length(1),       // 区切り線
+                Constraint::Percentage(remaining_width.saturating_sub(1)),  // ログエリア
+            ])
+            .split(main_chunks[0]);
 
-    render_module_tree(f, app, top_chunks[0]);
-    render_separator(f, top_chunks[1]);
-    render_logs(f, app, top_chunks[2]);
+        render_left_panel(f, app, top_chunks[0]);
+        render_separator(f, top_chunks[1]);
+        render_logs(f, app, top_chunks[2]);
+    } else {
+        render_logs(f, app, main_chunks[0]);
+    }
     render_status_bar(f, app, main_chunks[1]);
 }
+
+fn render_left_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),  // ログレベルフィルター用
+            Constraint::Length(1),  // 区切り線用
+            Constraint::Min(0),     // モジュールツリー用
+        ])
+        .split(area);
+
+    render_log_level_filter(f, app, left_chunks[0]);
+    render_horizontal_separator(f, left_chunks[1]);
+    render_module_tree(f, app, left_chunks[2]);
+}
+
 
 fn render_module_tree(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app.module_items
         .iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(index, item)| {
             let indent = "  ".repeat(item.level.saturating_sub(1));
             let checkbox = if item.is_selected { "☑" } else { "☐" };
             
-            let content = format!("{}{} {}", indent, checkbox, item.name);
+            // フォーカスがある場合は矢印分を空けておく、ない場合は直接スペースを追加
+            let prefix = if app.mode == AppMode::ModuleSelection {
+                // フォーカスがある場合、選択行のみハイライトシンボルで矢印が表示される
+                ""
+            } else {
+                // フォーカスがない場合、すべての行に矢印分のスペースを追加
+                "  "
+            };
+            
+            let content = format!("{}{}{} {}", prefix, indent, checkbox, item.name);
             
             let style = if item.is_selected {
                 Style::default().fg(Color::Green)
@@ -385,7 +507,13 @@ fn render_module_tree(f: &mut Frame, app: &mut App, area: Rect) {
         .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
         .highlight_symbol("→ ");
 
-    f.render_stateful_widget(list, area, &mut app.module_list_state);
+    // モジュール選択モードの場合のみフォーカス表示
+    let mut list_state = ListState::default();
+    if app.mode == AppMode::ModuleSelection {
+        list_state.select(app.module_list_state.selected());
+    }
+
+    f.render_stateful_widget(list, area, &mut list_state);
 }
 
 fn render_separator(f: &mut Frame, area: Rect) {
@@ -393,6 +521,14 @@ fn render_separator(f: &mut Frame, area: Rect) {
         .map(|_| Line::from("│"))
         .collect();
     
+    let separator = Paragraph::new(separator_text)
+        .style(Style::default().fg(Color::DarkGray));
+    
+    f.render_widget(separator, area);
+}
+
+fn render_horizontal_separator(f: &mut Frame, area: Rect) {
+    let separator_text = "─".repeat(area.width as usize);
     let separator = Paragraph::new(separator_text)
         .style(Style::default().fg(Color::DarkGray));
     
@@ -475,25 +611,148 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
-    let status_text = if let Some(ref message) = app.copy_message {
-        message.clone()
-    } else {
-        match app.mode {
-            AppMode::ModuleSelection => "Module Selection: ↑↓/jk: Navigate, Space: Toggle, Tab: Switch to logs, q: Quit".to_string(),
-            AppMode::LogNavigation => "Log Navigation: ↑↓/jk: Navigate, v: Select, Tab: Switch to modules, q: Quit".to_string(),
-            AppMode::TextSelection => "Text Selection: ↑↓/jk: Extend selection, y: Copy, Esc: Cancel".to_string(),
+fn render_log_level_filter(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app.available_log_levels
+        .iter()
+        .enumerate()
+        .map(|(index, level)| {
+            let checkbox = if app.log_level_filter.contains(level) { "☑" } else { "☐" };
+            
+            // フォーカスがある場合は矢印分を空けておく、ない場合は直接スペースを追加
+            let prefix = if app.mode == AppMode::LogLevelFilter {
+                // フォーカスがある場合、選択行のみハイライトシンボルで矢印が表示される
+                ""
+            } else {
+                // フォーカスがない場合、すべての行に矢印分のスペースを追加
+                "  "
+            };
+            
+            let content = format!("{}{} {}", prefix, checkbox, level);
+            
+            let style = match level.as_str() {
+                "ERROR" => Style::default().fg(Color::Red),
+                "WARN" => Style::default().fg(Color::Yellow),
+                "INFO" => Style::default().fg(Color::Green),
+                "DEBUG" => Style::default().fg(Color::Blue),
+                "TRACE" => Style::default().fg(Color::Magenta),
+                _ => Style::default().fg(Color::White),
+            };
+
+            let final_style = if !app.log_level_filter.contains(level) {
+                style.fg(Color::DarkGray)
+            } else {
+                style
+            };
+
+            ListItem::new(Line::from(Span::styled(content, final_style)))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+        .highlight_symbol("→ ");
+
+    // ログレベル選択状態を管理
+    let mut list_state = ListState::default();
+    if app.mode == AppMode::LogLevelFilter {
+        list_state.select(Some(app.selected_log_level_index));
+    }
+
+    f.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn create_colored_help_line(parts: Vec<(&str, &str)>) -> Line<'static> {
+    let mut spans = Vec::new();
+    
+    for (i, (key, desc)) in parts.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(", ", Style::default().fg(Color::DarkGray)));
         }
+        spans.push(Span::styled((*key).to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(": ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled((*desc).to_string(), Style::default().fg(Color::White)));
+    }
+    
+    Line::from(spans)
+}
+
+fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
+    if let Some(ref message) = app.copy_message {
+        let status_paragraph = Paragraph::new(message.clone())
+            .style(Style::default().fg(Color::Green));
+        f.render_widget(status_paragraph, area);
+        return;
+    }
+
+    let help_line = match app.mode {
+        AppMode::ModuleSelection => {
+            let mut parts = vec![
+                ("↑↓/jk", "Navigate"),
+                ("Space", "Toggle"),
+                ("a", "All"),
+                ("n", "None"),
+            ];
+            if app.show_filter_panel {
+                parts.extend_from_slice(&[(",/.", "Resize panel")]);
+            }
+            parts.extend_from_slice(&[("Tab", "Logs"), ("q", "Quit")]);
+            
+            let mut spans = vec![
+                Span::styled("Module Selection: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            ];
+            spans.extend(create_colored_help_line(parts).spans);
+            Line::from(spans)
+        },
+        AppMode::LogNavigation => {
+            let mut parts = vec![
+                ("↑↓/jk", "Navigate"),
+                ("v", "Select"),
+            ];
+            if app.show_filter_panel {
+                parts.push(("Tab", "Switch to modules"));
+            } else {
+                parts.push(("Tab", "Show filters"));
+            }
+            parts.push(("q", "Quit"));
+            
+            let mut spans = vec![
+                Span::styled("Log Navigation: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            ];
+            spans.extend(create_colored_help_line(parts).spans);
+            Line::from(spans)
+        },
+        AppMode::TextSelection => {
+            let parts = vec![
+                ("↑↓/jk", "Extend selection"),
+                ("y", "Copy"),
+                ("Esc", "Cancel"),
+            ];
+            
+            let mut spans = vec![
+                Span::styled("Text Selection: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            ];
+            spans.extend(create_colored_help_line(parts).spans);
+            Line::from(spans)
+        },
+        AppMode::LogLevelFilter => {
+            let mut parts = vec![
+                ("↑↓/jk", "Navigate"),
+                ("Space", "Toggle"),
+                ("1-5", "Direct toggle"),
+            ];
+            if app.show_filter_panel {
+                parts.push((",/.", "Resize panel"));
+            }
+            parts.extend_from_slice(&[("Tab", "Logs"), ("q", "Quit")]);
+            
+            let mut spans = vec![
+                Span::styled("Log Level Filter: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            ];
+            spans.extend(create_colored_help_line(parts).spans);
+            Line::from(spans)
+        },
     };
 
-    let status_style = if app.copy_message.is_some() {
-        Style::default().fg(Color::Green)
-    } else {
-        Style::default().fg(Color::White)
-    };
-
-    let status_paragraph = Paragraph::new(status_text)
-        .style(status_style);
-
+    let status_paragraph = Paragraph::new(help_line);
     f.render_widget(status_paragraph, area);
 }
