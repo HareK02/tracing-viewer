@@ -8,3 +8,9 @@
 *   モジュール単位でのログの表示/非表示フィルタリング
 *   ファイル監視によるログのリアルタイム更新
 *   選択したログのクリップボードへのコピー
+
+## Installation
+
+1. git clone
+2. cargo build --release
+3. cargo install --path .
