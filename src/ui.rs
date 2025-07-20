@@ -6,6 +6,8 @@ use ratatui::{
     widgets::{List, ListItem, ListState, Paragraph},
     Frame,
 };
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 pub struct App {
     pub module_tree: ModuleTree,
@@ -22,6 +24,9 @@ pub struct App {
     pub mode: AppMode,
     pub copy_message: Option<String>,
     pub auto_follow: bool,
+    pub filter_dirty: bool,
+    pub last_filter_hash: u64,
+    pub last_terminal_size: (u16, u16),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,6 +61,9 @@ impl App {
             mode: AppMode::ModuleSelection,
             copy_message: None,
             auto_follow: true,
+            filter_dirty: true,
+            last_filter_hash: 0,
+            last_terminal_size: (0, 0),
         };
         app.module_list_state.select(Some(0));
         app
@@ -65,6 +73,7 @@ impl App {
         let old_log_count = self.filtered_logs.len();
         self.logs = logs;
         self.rebuild_module_tree();
+        self.filter_dirty = true;  // フィルタ再実行を強制
         self.filter_logs();
         
         // 新しいログが追加されたときの自動追従
@@ -77,6 +86,10 @@ impl App {
         let old_log_count = self.filtered_logs.len();
         let new_log_count = new_logs.len();
         
+        if new_log_count == 0 {
+            return;
+        }
+        
         // 新しいログを追加
         self.logs.extend(new_logs);
         
@@ -86,7 +99,15 @@ impl App {
         }
         
         self.rebuild_module_items();
-        self.filter_logs();
+        
+        // 新しいログのみをフィルタリングして効率化
+        let new_filtered_logs: Vec<LogEntry> = self.logs[(self.logs.len() - new_log_count)..]
+            .iter()
+            .filter(|log| self.module_tree.is_module_selected(&log.target))
+            .cloned()
+            .collect();
+        
+        self.filtered_logs.extend(new_filtered_logs);
         
         // 新しいログが追加されたときの自動追従
         if self.auto_follow && self.filtered_logs.len() > old_log_count {
@@ -142,7 +163,20 @@ impl App {
         }
     }
 
+    fn calculate_filter_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.module_tree.hash(&mut hasher);
+        hasher.finish()
+    }
+
     pub fn filter_logs(&mut self) {
+        let current_hash = self.calculate_filter_hash();
+        
+        // フィルタ条件が変更されていない場合はスキップ
+        if !self.filter_dirty && current_hash == self.last_filter_hash {
+            return;
+        }
+        
         self.filtered_logs.clear();
         self.filtered_logs.extend(
             self.logs
@@ -150,6 +184,9 @@ impl App {
                 .filter(|log| self.module_tree.is_module_selected(&log.target))
                 .cloned()
         );
+        
+        self.filter_dirty = false;
+        self.last_filter_hash = current_hash;
     }
 
     pub fn toggle_selected_module(&mut self) {
@@ -158,6 +195,7 @@ impl App {
                 let module_path = self.module_items[selected_index].full_path.clone();
                 self.module_tree.toggle_selection(&module_path);
                 self.rebuild_module_items();
+                self.filter_dirty = true;
                 self.filter_logs();
             }
         }
@@ -293,6 +331,17 @@ impl App {
 }
 
 pub fn render(f: &mut Frame, app: &mut App) {
+    let current_size = (f.area().width, f.area().height);
+    
+    // 画面サイズが変更された場合の処理
+    if app.last_terminal_size != current_size {
+        app.last_terminal_size = current_size;
+        // スクロール位置を調整（画面サイズに合わせて）
+        if app.auto_follow && !app.filtered_logs.is_empty() {
+            app.scroll_to_bottom();
+        }
+    }
+    
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(1)])
@@ -361,10 +410,19 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect) {
     // 実際の表示可能行数でスクロール位置を更新
     let visible_lines = log_area.height as usize;
     app.update_scroll_position_with_height(visible_lines);
+    
+    // 表示範囲のみを処理（バッファを少し多めに取る）
+    let buffer_size = 10;
+    let start_index = app.log_scroll_position.saturating_sub(buffer_size);
+    let end_index = (app.log_scroll_position + visible_lines + buffer_size).min(app.filtered_logs.len());
+    
     let log_content: Vec<Line> = app.filtered_logs
         .iter()
+        .skip(start_index)
+        .take(end_index - start_index)
         .enumerate()
-        .map(|(index, log)| {
+        .map(|(relative_index, log)| {
+            let index = start_index + relative_index;
             let level_style = match log.level.as_str() {
                 "ERROR" => Style::default().fg(Color::Red),
                 "WARN" => Style::default().fg(Color::Yellow),
@@ -400,7 +458,7 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let paragraph = Paragraph::new(log_content)
-        .scroll((app.log_scroll_position as u16, 0));
+        .scroll(((app.log_scroll_position.saturating_sub(start_index)) as u16, 0));
 
     f.render_widget(paragraph, log_area);
 

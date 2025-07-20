@@ -1,6 +1,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -16,6 +17,21 @@ pub struct ModuleTree {
     pub name: String,
     pub children: HashMap<String, ModuleTree>,
     pub is_selected: bool,
+}
+
+impl Hash for ModuleTree {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.is_selected.hash(state);
+        
+        // HashMapの順序は不定なので、キーをソートしてからハッシュ化
+        let mut keys: Vec<_> = self.children.keys().collect();
+        keys.sort();
+        for key in keys {
+            key.hash(state);
+            self.children[key].hash(state);
+        }
+    }
 }
 
 impl ModuleTree {

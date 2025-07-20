@@ -39,7 +39,7 @@ struct Cli {
     #[arg(short, long, help = "Input file path (default: stdin)")]
     input: Option<String>,
     
-    #[arg(short, long, default_value = "100", help = "Refresh interval in milliseconds")]
+    #[arg(short, long, default_value = "300", help = "Refresh interval in milliseconds")]
     refresh: u64,
 
     #[arg(long, help = "Enable logging to the specified file")]
@@ -134,6 +134,8 @@ async fn main() -> anyhow::Result<()> {
     let mut refresh_interval = interval(Duration::from_millis(cli.refresh));
     let mut pending_logs = Vec::new();
     let mut should_redraw = true;
+    let mut last_redraw_time = std::time::Instant::now();
+    let min_redraw_interval = Duration::from_millis(16); // 約60fps
     let mut event_stream = EventStream::new();
 
     debug!("メインループ開始前の準備完了");
@@ -164,19 +166,34 @@ async fn main() -> anyhow::Result<()> {
                 
                 event = event_stream.next() => {
                     if let Some(Ok(event)) = event {
-                        handle_events(&event, &mut app, &clipboard_holder)?;
-                        should_redraw = true;
+                        let needs_redraw = handle_events(&event, &mut app, &clipboard_holder)?;
+                        if needs_redraw {
+                            should_redraw = true;
+                        }
+                        
+                        // 画面サイズ変更イベントを検出（即座に再描画）
+                        if matches!(event, Event::Resize(_, _)) {
+                            should_redraw = true;
+                            // Resizeイベントは即座に描画する
+                            if let Err(e) = terminal.draw(|f| ui::render(f, &mut app)) {
+                                error!("Resizeイベントでの描画エラー: {}", e);
+                                return Err(e.into());
+                            }
+                            should_redraw = false;
+                            last_redraw_time = std::time::Instant::now();
+                        }
                     }
                 }
             }
 
-            // 再描画が必要な場合のみ描画
-            if should_redraw {
+            // 再描画が必要で、かつ最小間隔が経過している場合のみ描画
+            if should_redraw && last_redraw_time.elapsed() >= min_redraw_interval {
                 if let Err(e) = terminal.draw(|f| ui::render(f, &mut app)) {
                     error!("メインループでの描画エラー: {}", e);
                     return Err(e.into());
                 }
                 should_redraw = false;
+                last_redraw_time = std::time::Instant::now();
             }
 
             if app.should_quit {
@@ -211,7 +228,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Option<Clipboard>>>) -> anyhow::Result<()> {
+fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Option<Clipboard>>>) -> anyhow::Result<bool> {
     match event {
         Event::Key(key) => {
             if key.kind == KeyEventKind::Press {
@@ -334,12 +351,14 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                             }
                             KeyCode::Char('c') => {
                                 app.clear_copy_message();
+                                return Ok(true);
                             }
-                            _ => {}
+                            _ => return Ok(false),
                         }
                     }
                 }
             }
+            Ok(true)
         }
         Event::Mouse(mouse) => {
             match mouse.kind {
@@ -350,6 +369,7 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                             app.previous_log_line();
                         }
                     }
+                    Ok(true)
                 }
                 MouseEventKind::ScrollDown => {
                     // マウススクロールダウン（下に3行スクロール）
@@ -358,13 +378,17 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                             app.next_log_line();
                         }
                     }
+                    Ok(true)
                 }
-                _ => {}
+                _ => Ok(false),
             }
         }
-        _ => {}
+        Event::Resize(_width, _height) => {
+            // 画面サイズ変更時は常に再描画
+            Ok(true)
+        }
+        _ => Ok(false),
     }
-    Ok(())
 }
 
 fn parse_logs_from_content(parser: &LogParser, content: &str) -> Vec<LogEntry> {
