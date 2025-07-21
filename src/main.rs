@@ -35,6 +35,7 @@ use log::{debug, error};
 #[derive(Parser)]
 #[command(name = "tracing-viewer")]
 #[command(about = "A TUI application for filtering and viewing tracing logs")]
+#[command(version)]
 struct Cli {
     #[arg(short, long, help = "Input file path (default: stdin)")]
     input: Option<String>,
