@@ -32,6 +32,7 @@ pub struct App {
     pub selected_log_level_index: usize,
     pub show_filter_panel: bool,
     pub filter_panel_width: u16,
+    pub last_action_was_focus_move: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +52,154 @@ pub struct ModuleItem {
 }
 
 impl App {
+    /// Calculate the number of display lines for a log entry
+    fn calculate_display_lines(entry: &LogEntry) -> usize {
+        entry.message.lines().count()
+    }
+
+    /// Find which entry corresponds to the current scroll position
+    fn find_entry_at_scroll_position(&self) -> usize {
+        let mut current_line = 0;
+        for (entry_idx, entry) in self.filtered_logs.iter().enumerate() {
+            let entry_lines = Self::calculate_display_lines(entry);
+            if current_line + entry_lines > self.log_scroll_position {
+                return entry_idx;
+            }
+            current_line += entry_lines;
+        }
+        self.filtered_logs.len().saturating_sub(1)
+    }
+
+    /// Calculate the display line position of a specific entry
+    fn get_entry_display_position(&self, entry_index: usize) -> usize {
+        self.filtered_logs
+            .iter()
+            .take(entry_index)
+            .map(Self::calculate_display_lines)
+            .sum()
+    }
+
+    /// Ensure the focused entry is visible by adjusting scroll position (for focus movement)
+    fn ensure_focus_visible_with_buffer(&mut self, visible_lines: usize) {
+        if self.filtered_logs.is_empty() {
+            return;
+        }
+
+        let focused_entry_start = self.get_entry_display_position(self.current_log_line);
+        let focused_entry_end = focused_entry_start + Self::calculate_display_lines(&self.filtered_logs[self.current_log_line]);
+        let scroll_end = self.log_scroll_position + visible_lines;
+        
+        // Calculate display positions for buffer entries
+        let prev_entry_start = if self.current_log_line > 0 {
+            self.get_entry_display_position(self.current_log_line - 1)
+        } else {
+            focused_entry_start
+        };
+        
+        let next_entry_end = if self.current_log_line < self.filtered_logs.len() - 1 {
+            let next_entry_start = self.get_entry_display_position(self.current_log_line + 1);
+            next_entry_start + Self::calculate_display_lines(&self.filtered_logs[self.current_log_line + 1])
+        } else {
+            focused_entry_end
+        };
+        
+        // If we can't see the previous entry, scroll up to show it
+        if prev_entry_start < self.log_scroll_position && self.current_log_line > 0 {
+            self.log_scroll_position = prev_entry_start;
+        }
+        // If we can't see the next entry, scroll down to show it
+        else if next_entry_end > scroll_end && self.current_log_line < self.filtered_logs.len() - 1 {
+            let total_display_lines = self.filtered_logs
+                .iter()
+                .map(Self::calculate_display_lines)
+                .sum::<usize>();
+            let max_scroll = total_display_lines.saturating_sub(visible_lines);
+            
+            // Position so that the next entry is fully visible at the bottom
+            let target_scroll = next_entry_end - visible_lines;
+            self.log_scroll_position = target_scroll.min(max_scroll);
+        }
+    }
+
+    /// Adjust focus when scrolling to keep it on screen (for wheel scroll)
+    fn adjust_focus_for_scroll_with_lines(&mut self, visible_lines: usize) {
+        if self.filtered_logs.is_empty() {
+            return;
+        }
+
+        let focused_entry_start = self.get_entry_display_position(self.current_log_line);
+        let focused_entry_end = focused_entry_start + Self::calculate_display_lines(&self.filtered_logs[self.current_log_line]);
+        let scroll_end = self.log_scroll_position + visible_lines;
+        
+        // If focus is completely off screen, find the best visible entry
+        if focused_entry_end <= self.log_scroll_position || focused_entry_start >= scroll_end {
+            // Find the closest visible entry to the current focus
+            let mut best_entry = self.current_log_line;
+            let mut best_distance = usize::MAX;
+            
+            for (entry_idx, entry) in self.filtered_logs.iter().enumerate() {
+                let entry_start = self.get_entry_display_position(entry_idx);
+                let entry_end = entry_start + Self::calculate_display_lines(entry);
+                
+                // Check if this entry is visible
+                if entry_start < scroll_end && entry_end > self.log_scroll_position {
+                    let distance = if entry_idx > self.current_log_line {
+                        entry_idx - self.current_log_line
+                    } else {
+                        self.current_log_line - entry_idx
+                    };
+                    
+                    if distance < best_distance {
+                        best_distance = distance;
+                        best_entry = entry_idx;
+                    }
+                }
+            }
+            
+            self.current_log_line = best_entry;
+        }
+    }
+
+
+    /// Calculate display range of entries that fit within visible lines
+    fn calculate_display_range(&self, scroll_position: usize, visible_lines: usize) -> (usize, usize) {
+        if self.filtered_logs.is_empty() {
+            return (0, 0);
+        }
+
+        let mut current_line = 0;
+        let mut start_entry = 0;
+        let mut end_entry = 0;
+        let mut found_start = false;
+
+        for (entry_idx, entry) in self.filtered_logs.iter().enumerate() {
+            let entry_lines = Self::calculate_display_lines(entry);
+            
+            // Find start entry
+            if !found_start && current_line + entry_lines > scroll_position {
+                start_entry = entry_idx;
+                found_start = true;
+            }
+            
+            // Find end entry
+            if found_start && current_line >= scroll_position + visible_lines {
+                end_entry = entry_idx;
+                break;
+            }
+            
+            current_line += entry_lines;
+        }
+        
+        if !found_start {
+            start_entry = self.filtered_logs.len().saturating_sub(1);
+        }
+        if end_entry == 0 {
+            end_entry = self.filtered_logs.len();
+        }
+        
+        (start_entry, end_entry)
+    }
+
     pub fn new() -> Self {
         let mut app = Self {
             module_tree: ModuleTree::new("root".to_string()),
@@ -75,6 +224,7 @@ impl App {
             selected_log_level_index: 0,
             show_filter_panel: true,
             filter_panel_width: 25,
+            last_action_was_focus_move: false,
         };
         app.module_list_state.select(Some(0));
         app
@@ -273,7 +423,8 @@ impl App {
         self.copy_message = None;
     }
 
-    pub fn next_log_line(&mut self) {
+    /// Move focus to next entry and auto-scroll if needed
+    pub fn next_log_entry(&mut self) {
         if !self.filtered_logs.is_empty() {
             let old_line = self.current_log_line;
             self.current_log_line = (self.current_log_line + 1).min(self.filtered_logs.len() - 1);
@@ -286,21 +437,88 @@ impl App {
                 self.auto_follow = false;
             }
             
+            // Mark this as a focus movement action
+            self.last_action_was_focus_move = true;
+            
             if self.mode == AppMode::TextSelection {
                 self.selection_end = Some(self.current_log_line);
             }
         }
     }
 
-    pub fn previous_log_line(&mut self) {
+    /// Move focus to previous entry and auto-scroll if needed
+    pub fn previous_log_entry(&mut self) {
         if self.current_log_line > 0 {
             self.current_log_line -= 1;
             // 手動で上にナビゲーションした場合は自動追従を停止
             self.auto_follow = false;
             
+            // Mark this as a focus movement action
+            self.last_action_was_focus_move = true;
+            
             if self.mode == AppMode::TextSelection {
                 self.selection_end = Some(self.current_log_line);
             }
+        }
+    }
+
+    /// Scroll display area without changing focus
+    pub fn scroll_down(&mut self, lines: usize) {
+        if !self.filtered_logs.is_empty() {
+            let total_display_lines = self.filtered_logs
+                .iter()
+                .map(Self::calculate_display_lines)
+                .sum::<usize>();
+            
+            let max_scroll = total_display_lines.saturating_sub(1);
+            self.log_scroll_position = (self.log_scroll_position + lines).min(max_scroll);
+            self.auto_follow = false;
+            
+            // Mark this as a scroll action
+            self.last_action_was_focus_move = false;
+        }
+    }
+
+    /// Scroll display area without changing focus
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.log_scroll_position = self.log_scroll_position.saturating_sub(lines);
+        self.auto_follow = false;
+        
+        // Mark this as a scroll action
+        self.last_action_was_focus_move = false;
+    }
+
+
+    pub fn page_up(&mut self, visible_lines: usize) {
+        let scroll_amount = visible_lines.saturating_sub(1).max(1);
+        self.log_scroll_position = self.log_scroll_position.saturating_sub(scroll_amount);
+        self.auto_follow = false;
+        
+        // Mark this as a scroll action
+        self.last_action_was_focus_move = false;
+        
+        if self.mode == AppMode::TextSelection {
+            self.selection_end = Some(self.current_log_line);
+        }
+    }
+
+    pub fn page_down(&mut self, visible_lines: usize) {
+        let total_display_lines = self.filtered_logs
+            .iter()
+            .map(Self::calculate_display_lines)
+            .sum::<usize>();
+        
+        let scroll_amount = visible_lines.saturating_sub(1).max(1);
+        let max_scroll = total_display_lines.saturating_sub(visible_lines.min(total_display_lines));
+        
+        self.log_scroll_position = (self.log_scroll_position + scroll_amount).min(max_scroll);
+        self.auto_follow = false;
+        
+        // Mark this as a scroll action
+        self.last_action_was_focus_move = false;
+        
+        if self.mode == AppMode::TextSelection {
+            self.selection_end = Some(self.current_log_line);
         }
     }
 
@@ -332,6 +550,12 @@ impl App {
     pub fn scroll_to_bottom(&mut self) {
         if !self.filtered_logs.is_empty() {
             self.current_log_line = self.filtered_logs.len() - 1;
+            // 最後のエントリの最後の表示行にスクロール
+            let total_display_lines = self.filtered_logs
+                .iter()
+                .map(Self::calculate_display_lines)
+                .sum::<usize>();
+            self.log_scroll_position = total_display_lines.saturating_sub(1);
             self.auto_follow = true;
         }
     }
@@ -404,20 +628,36 @@ impl App {
             return;
         }
         
-        let max_scroll = self.filtered_logs.len().saturating_sub(visible_lines);
+        // 総表示行数を計算
+        let total_display_lines = self.filtered_logs
+            .iter()
+            .map(Self::calculate_display_lines)
+            .sum::<usize>();
         
-        // 選択項目が画面端に近づいた場合に1行先まで表示
-        if self.current_log_line <= self.log_scroll_position {
-            // 上にスクロール：選択項目の1行上まで表示
-            self.log_scroll_position = self.current_log_line.saturating_sub(1);
-        }
-        else if self.current_log_line >= self.log_scroll_position + visible_lines - 1 {
-            // 下にスクロール：選択項目の1行下まで表示
-            self.log_scroll_position = (self.current_log_line + 2).saturating_sub(visible_lines);
-        }
+        // 表示可能な最大スクロール位置を計算
+        let max_scroll = total_display_lines.saturating_sub(visible_lines);
         
         // スクロール位置が範囲内に収まるように制限
         self.log_scroll_position = self.log_scroll_position.min(max_scroll);
+        
+        // Update helper methods with correct visible lines
+        self.update_focus_visibility_with_lines(visible_lines);
+    }
+
+    /// Update focus visibility calculations with actual visible lines
+    fn update_focus_visibility_with_lines(&mut self, visible_lines: usize) {
+        if self.filtered_logs.is_empty() {
+            return;
+        }
+
+        // Apply different logic based on last action
+        if self.last_action_was_focus_move && (self.mode == AppMode::LogNavigation || self.mode == AppMode::TextSelection) {
+            // Focus movement: adjust scroll to ensure buffer visibility
+            self.ensure_focus_visible_with_buffer(visible_lines);
+        } else {
+            // Scroll action: adjust focus to stay on screen
+            self.adjust_focus_for_scroll_with_lines(visible_lines);
+        }
     }
 }
 
@@ -478,7 +718,7 @@ fn render_module_tree(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app.module_items
         .iter()
         .enumerate()
-        .map(|(index, item)| {
+        .map(|(_index, item)| {
             let indent = "  ".repeat(item.level.saturating_sub(1));
             let checkbox = if item.is_selected { "☑" } else { "☐" };
             
@@ -547,17 +787,34 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect) {
     let visible_lines = log_area.height as usize;
     app.update_scroll_position_with_height(visible_lines);
     
-    // 表示範囲のみを処理（バッファを少し多めに取る）
-    let buffer_size = 10;
-    let start_index = app.log_scroll_position.saturating_sub(buffer_size);
-    let end_index = (app.log_scroll_position + visible_lines + buffer_size).min(app.filtered_logs.len());
+    // ログが空の場合は早期リターン
+    if app.filtered_logs.is_empty() {
+        f.render_widget(Paragraph::new("No logs to display"), log_area);
+        return;
+    }
     
+    // 表示範囲を実際の表示行数に基づいて計算
+    let (start_entry, end_entry) = app.calculate_display_range(app.log_scroll_position, visible_lines);
+    
+    // 安全性を確保するため、インデックスの妥当性を再チェック
+    let start_index = start_entry.min(app.filtered_logs.len());
+    let end_index = end_entry.min(app.filtered_logs.len()).max(start_index);
+    
+    // スクロール位置から開始エントリまでの表示行数を計算
+    let skip_lines = app.filtered_logs
+        .iter()
+        .take(start_index)
+        .map(App::calculate_display_lines)
+        .sum::<usize>();
+    
+    let scroll_offset = app.log_scroll_position.saturating_sub(skip_lines);
+
     let log_content: Vec<Line> = app.filtered_logs
         .iter()
         .skip(start_index)
         .take(end_index - start_index)
         .enumerate()
-        .map(|(relative_index, log)| {
+        .flat_map(|(relative_index, log)| {
             let index = start_index + relative_index;
             let level_style = match log.level.as_str() {
                 "ERROR" => Style::default().fg(Color::Red),
@@ -574,36 +831,58 @@ fn render_logs(f: &mut Frame, app: &mut App, area: Rect) {
                 index >= start && index <= end
             };
 
-            let is_current = index == app.current_log_line && app.mode == AppMode::LogNavigation;
+            let is_current = index == app.current_log_line && 
+                (app.mode == AppMode::LogNavigation || app.mode == AppMode::TextSelection);
 
             let mut base_style = Style::default();
             if is_selected {
                 base_style = base_style.bg(Color::DarkGray);
             }
             if is_current {
-                base_style = base_style.bg(Color::Blue);
+                // Make focus more prominent with bright background and bold text
+                base_style = base_style.bg(Color::Blue).add_modifier(Modifier::BOLD);
             }
 
-            Line::from(vec![
-                Span::styled(format!("[{}] ", log.timestamp), base_style.fg(Color::Cyan)),
-                Span::styled(format!("{:<5} ", log.level), base_style.patch(level_style)),
-                Span::styled(format!("{}: ", log.target), base_style.fg(Color::Yellow)),
-                Span::styled(&log.message, base_style),
-            ])
+            let message_lines: Vec<&str> = log.message.lines().collect();
+            let mut lines = Vec::new();
+            
+            for (line_index, message_line) in message_lines.iter().enumerate() {
+                if line_index == 0 {
+                    // First line includes timestamp, level, and target
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("[{}] ", log.timestamp), base_style.fg(Color::Cyan)),
+                        Span::styled(format!("{:<5} ", log.level), base_style.patch(level_style)),
+                        Span::styled(format!("{}: ", log.target), base_style.fg(Color::Yellow)),
+                        Span::styled(*message_line, base_style),
+                    ]));
+                } else {
+                    // Continuation lines are indented
+                    lines.push(Line::from(vec![
+                        Span::styled("    ", base_style), // Indentation for continuation
+                        Span::styled(*message_line, base_style),
+                    ]));
+                }
+            }
+            
+            lines
         })
         .collect();
 
     let paragraph = Paragraph::new(log_content)
-        .scroll(((app.log_scroll_position.saturating_sub(start_index)) as u16, 0));
+        .scroll((scroll_offset as u16, 0));
 
     f.render_widget(paragraph, log_area);
 
     if !app.filtered_logs.is_empty() {
-        let total_logs = app.filtered_logs.len();
+        let total_display_lines = app.filtered_logs
+            .iter()
+            .map(App::calculate_display_lines)
+            .sum::<usize>();
         let start_line = app.log_scroll_position + 1;
-        let end_line = (app.log_scroll_position + visible_lines).min(total_logs);
+        let end_line = (app.log_scroll_position + visible_lines).min(total_display_lines);
         
-        let pagination_text = format!("{}-{} of {}", start_line, end_line, total_logs);
+        let pagination_text = format!("{}-{} of {} lines ({} entries)", 
+            start_line, end_line, total_display_lines, app.filtered_logs.len());
         let pagination_paragraph = Paragraph::new(pagination_text)
             .style(Style::default().fg(Color::DarkGray));
             
@@ -615,7 +894,7 @@ fn render_log_level_filter(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app.available_log_levels
         .iter()
         .enumerate()
-        .map(|(index, level)| {
+        .map(|(_index, level)| {
             let checkbox = if app.log_level_filter.contains(level) { "☑" } else { "☐" };
             
             // フォーカスがある場合は矢印分を空けておく、ない場合は直接スペースを追加
@@ -705,11 +984,13 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         },
         AppMode::LogNavigation => {
             let mut parts = vec![
-                ("↑↓/jk", "Navigate"),
-                ("v", "Select"),
+                ("↑↓/jk", "Move focus"),
+                ("Wheel", "Scroll view"),
+                ("PgUp/PgDn", "Page scroll"),
+                ("v", "Select text"),
             ];
             if app.show_filter_panel {
-                parts.push(("Tab", "Switch to modules"));
+                parts.push(("Tab", "Modules"));
             } else {
                 parts.push(("Tab", "Show filters"));
             }
@@ -724,6 +1005,8 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         AppMode::TextSelection => {
             let parts = vec![
                 ("↑↓/jk", "Extend selection"),
+                ("Wheel", "Scroll view"),
+                ("PgUp/PgDn", "Page scroll"),
                 ("y", "Copy"),
                 ("Esc", "Cancel"),
             ];
@@ -737,8 +1020,8 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         AppMode::LogLevelFilter => {
             let mut parts = vec![
                 ("↑↓/jk", "Navigate"),
-                ("Space", "Toggle"),
-                ("1-5", "Direct toggle"),
+                ("Space", "Toggle level"),
+                ("1-5", "Quick toggle"),
             ];
             if app.show_filter_panel {
                 parts.push((",/.", "Resize panel"));

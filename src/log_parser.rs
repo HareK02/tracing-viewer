@@ -135,6 +135,35 @@ impl LogParser {
             None
         }
     }
+
+    pub fn parse_multiline_logs(&self, content: &str) -> Vec<LogEntry> {
+        let mut entries = Vec::new();
+        let lines: Vec<&str> = content.lines().collect();
+        let mut current_entry: Option<LogEntry> = None;
+        
+        for line in lines {
+            if let Some(new_entry) = self.parse_line(line) {
+                // 新しいエントリが見つかった場合、前のエントリを保存
+                if let Some(entry) = current_entry.take() {
+                    entries.push(entry);
+                }
+                current_entry = Some(new_entry);
+            } else if let Some(ref mut entry) = current_entry {
+                // 既存のエントリの続きの行として追加
+                if !line.trim().is_empty() {
+                    entry.message.push('\n');
+                    entry.message.push_str(line);
+                }
+            }
+        }
+        
+        // 最後のエントリを保存
+        if let Some(entry) = current_entry {
+            entries.push(entry);
+        }
+        
+        entries
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +199,29 @@ mod tests {
         assert!(tree.is_module_selected("myapp::module"));
         tree.toggle_selection("myapp::module");
         assert!(!tree.is_module_selected("myapp::module"));
+    }
+
+    #[test]
+    fn test_multiline_log_parsing() {
+        let parser = LogParser::new().unwrap();
+        let content = r#"2024-01-01T12:00:00.123Z INFO myapp::module: First log message
+This is a continuation line
+And another line
+2024-01-01T12:00:01.456Z ERROR myapp::other: Second log message
+Error details on next line
+    with indented content
+2024-01-01T12:00:02.789Z WARN myapp::third: Third message"#;
+
+        let entries = parser.parse_multiline_logs(content);
+        assert_eq!(entries.len(), 3);
+        
+        assert_eq!(entries[0].level, "INFO");
+        assert_eq!(entries[0].message, "First log message\nThis is a continuation line\nAnd another line");
+        
+        assert_eq!(entries[1].level, "ERROR");
+        assert_eq!(entries[1].message, "Second log message\nError details on next line\n    with indented content");
+        
+        assert_eq!(entries[2].level, "WARN");
+        assert_eq!(entries[2].message, "Third message");
     }
 }

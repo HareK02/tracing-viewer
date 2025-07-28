@@ -167,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
                 
                 event = event_stream.next() => {
                     if let Some(Ok(event)) = event {
-                        let needs_redraw = handle_events(&event, &mut app, &clipboard_holder)?;
+                        let needs_redraw = handle_events(&event, &mut app, &clipboard_holder, terminal.size()?)?;
                         if needs_redraw {
                             should_redraw = true;
                         }
@@ -229,7 +229,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Option<Clipboard>>>) -> anyhow::Result<bool> {
+fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Option<Clipboard>>>, terminal_size: ratatui::layout::Size) -> anyhow::Result<bool> {
     match event {
         Event::Key(key) => {
             if key.kind == KeyEventKind::Press {
@@ -312,10 +312,18 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                                 }
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                app.next_log_line();
+                                app.next_log_entry();
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
-                                app.previous_log_line();
+                                app.previous_log_entry();
+                            }
+                            KeyCode::PageUp => {
+                                let visible_lines = terminal_size.height.saturating_sub(3) as usize; // Account for status bars
+                                app.page_up(visible_lines);
+                            }
+                            KeyCode::PageDown => {
+                                let visible_lines = terminal_size.height.saturating_sub(3) as usize; // Account for status bars
+                                app.page_down(visible_lines);
                             }
                             KeyCode::Char('v') => {
                                 app.start_text_selection();
@@ -351,10 +359,18 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                                 app.quit();
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                app.next_log_line();
+                                app.next_log_entry();
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
-                                app.previous_log_line();
+                                app.previous_log_entry();
+                            }
+                            KeyCode::PageUp => {
+                                let visible_lines = terminal_size.height.saturating_sub(3) as usize; // Account for status bars
+                                app.page_up(visible_lines);
+                            }
+                            KeyCode::PageDown => {
+                                let visible_lines = terminal_size.height.saturating_sub(3) as usize; // Account for status bars
+                                app.page_down(visible_lines);
                             }
                             KeyCode::Char('y') => {
                                 let selected_text = app.copy_selected_logs()?;
@@ -483,19 +499,15 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     // マウススクロールアップ（上に3行スクロール）
-                    for _ in 0..3 {
-                        if app.mode == AppMode::LogNavigation || app.mode == AppMode::TextSelection {
-                            app.previous_log_line();
-                        }
+                    if app.mode == AppMode::LogNavigation || app.mode == AppMode::TextSelection {
+                        app.scroll_up(3);
                     }
                     Ok(true)
                 }
                 MouseEventKind::ScrollDown => {
                     // マウススクロールダウン（下に3行スクロール）
-                    for _ in 0..3 {
-                        if app.mode == AppMode::LogNavigation || app.mode == AppMode::TextSelection {
-                            app.next_log_line();
-                        }
+                    if app.mode == AppMode::LogNavigation || app.mode == AppMode::TextSelection {
+                        app.scroll_down(3);
                     }
                     Ok(true)
                 }
@@ -511,17 +523,12 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
 }
 
 fn parse_logs_from_content(parser: &LogParser, content: &str) -> Vec<LogEntry> {
-    content
-        .lines()
-        .filter_map(|line| parser.parse_line(line))
-        .collect()
+    parser.parse_multiline_logs(content)
 }
 
 fn parse_logs_from_lines(parser: &LogParser, lines: &[String]) -> Vec<LogEntry> {
-    lines
-        .iter()
-        .filter_map(|line| parser.parse_line(line))
-        .collect()
+    let content = lines.join("\n");
+    parser.parse_multiline_logs(&content)
 }
 
 async fn watch_file(file_path: &str, log_sender: mpsc::UnboundedSender<String>, cancellation_token: CancellationToken) -> anyhow::Result<()> {
