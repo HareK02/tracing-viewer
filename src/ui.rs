@@ -85,6 +85,11 @@ impl App {
             return;
         }
 
+        // Ensure current_log_line is within bounds
+        if self.current_log_line >= self.filtered_logs.len() {
+            self.current_log_line = self.filtered_logs.len().saturating_sub(1);
+        }
+
         let focused_entry_start = self.get_entry_display_position(self.current_log_line);
         let focused_entry_end = focused_entry_start + Self::calculate_display_lines(&self.filtered_logs[self.current_log_line]);
         let scroll_end = self.log_scroll_position + visible_lines;
@@ -125,6 +130,11 @@ impl App {
     fn adjust_focus_for_scroll_with_lines(&mut self, visible_lines: usize) {
         if self.filtered_logs.is_empty() {
             return;
+        }
+
+        // Ensure current_log_line is within bounds
+        if self.current_log_line >= self.filtered_logs.len() {
+            self.current_log_line = self.filtered_logs.len().saturating_sub(1);
         }
 
         let focused_entry_start = self.get_entry_display_position(self.current_log_line);
@@ -360,13 +370,18 @@ impl App {
                 .cloned()
         );
         
+        // Ensure current_log_line is within bounds after filtering
+        if self.current_log_line >= self.filtered_logs.len() {
+            self.current_log_line = self.filtered_logs.len().saturating_sub(1);
+        }
+        
         self.filter_dirty = false;
         self.last_filter_hash = current_hash;
     }
 
     pub fn toggle_selected_module(&mut self) {
         if let Some(selected_index) = self.module_list_state.selected() {
-            if selected_index < self.module_items.len() {
+            if !self.module_items.is_empty() && selected_index < self.module_items.len() {
                 let module_path = self.module_items[selected_index].full_path.clone();
                 self.module_tree.toggle_selection(&module_path);
                 self.rebuild_module_items();
@@ -606,7 +621,7 @@ impl App {
     }
 
     pub fn toggle_selected_log_level(&mut self) {
-        if self.selected_log_level_index < self.available_log_levels.len() {
+        if !self.available_log_levels.is_empty() && self.selected_log_level_index < self.available_log_levels.len() {
             let level = self.available_log_levels[self.selected_log_level_index].clone();
             self.toggle_log_level(&level);
         }
@@ -933,7 +948,7 @@ fn render_log_level_filter(f: &mut Frame, app: &App, area: Rect) {
 
     // ログレベル選択状態を管理
     let mut list_state = ListState::default();
-    if app.mode == AppMode::LogLevelFilter {
+    if app.mode == AppMode::LogLevelFilter && !app.available_log_levels.is_empty() && app.selected_log_level_index < app.available_log_levels.len() {
         list_state.select(Some(app.selected_log_level_index));
     }
 

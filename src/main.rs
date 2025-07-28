@@ -244,7 +244,7 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
                                 // モジュールリストの最下部にいる場合、ログレベル選択に移動
-                                if app.module_list_state.selected().unwrap_or(0) == app.module_items.len().saturating_sub(1) {
+                                if !app.module_items.is_empty() && app.module_list_state.selected().unwrap_or(0) == app.module_items.len().saturating_sub(1) {
                                     app.switch_to_log_level_mode();
                                 } else {
                                     app.next_module();
@@ -444,7 +444,7 @@ fn handle_events(event: &Event, app: &mut App, clipboard_holder: &Arc<Mutex<Opti
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
                                 // ログレベルリストの最下部にいる場合、モジュール選択の最上部に移動
-                                if app.selected_log_level_index == app.available_log_levels.len().saturating_sub(1) {
+                                if !app.available_log_levels.is_empty() && app.selected_log_level_index == app.available_log_levels.len().saturating_sub(1) {
                                     app.switch_to_module_mode();
                                     // モジュールリストの最上部に移動
                                     app.module_list_state.select(Some(0));
